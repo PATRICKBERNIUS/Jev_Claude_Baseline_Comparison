@@ -1,0 +1,34 @@
+---
+title: "TF-IDF vs JEV vs Claude"
+format: html
+---
+
+
+```{python}
+import pandas as pd
+import json
+
+with open("results/claude_summary.json", "r", encoding="utf-8") as file:
+    claude = json.load(file)
+
+with open("results/tfidf_summary.json", "r", encoding="utf-8") as file:
+    tfidf = json.load(file)
+
+with open("results/jev_summary.json", "r", encoding="utf-8") as file:
+    jev = json.load(file)
+
+```
+
+
+
+```{python}
+combined_sum = pd.DataFrame([tfidf, jev, claude]).set_index("model").fillna(0)
+combined_sum["cost_per_1000"] = combined_sum["total_cost"] / combined_sum["n"] * 1000
+
+combined_sum = combined_sum.T
+combined_sum.to_csv("results/comparison.csv")
+```
+
+
+
+

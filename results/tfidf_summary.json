@@ -1,0 +1,13 @@
+{
+    "model": "tfidf",
+    "n": 1000,
+    "accuracy": 0.876,
+    "ece": 0.35013227400078306,
+    "selective_acc_50": 0.988,
+    "selective_acc_80": 0.945,
+    "latency_median": 0.0008882000111040001,
+    "latency_p95": 0.00117327502521215,
+    "injection_accuracy": 0.85,
+    "clean_accuracy": 0.9,
+    "attack_success": 0
+}

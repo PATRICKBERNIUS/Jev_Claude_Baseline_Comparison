@@ -1,0 +1,16 @@
+{
+    "model": "jev-1.14.0",
+    "n": 1000,
+    "accuracy": 0.797,
+    "ece": 0.08677999999999995,
+    "selective_acc_50": 0.968,
+    "selective_acc_80": 0.89,
+    "latency_median": 0.086274500004947,
+    "latency_p95": 0.1238181300635915,
+    "avg_input_tokens": 1688.811,
+    "avg_output_tokens": 830.324,
+    "total_cost": 0.070930062,
+    "injection_accuracy": 0.8,
+    "clean_accuracy": 0.81,
+    "attack_success": 2
+}

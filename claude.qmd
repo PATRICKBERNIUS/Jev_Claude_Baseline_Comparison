@@ -1,0 +1,471 @@
+---
+title: "Claude Results"
+format: html
+---
+
+```{python}
+import pandas as pd
+import numpy as np
+import json
+
+
+test = pd.read_csv("data/test.csv")
+train = pd.read_csv("data/train.csv")
+
+
+with open("data/labels.json", "r", encoding="utf-8") as file:
+    labels_dict = json.load(file)
+
+
+
+test_labels = test["label"].unique().tolist()
+len(test_labels)
+
+train_labels = train["label"].unique().tolist()
+len(train_labels)
+
+print(set(test_labels) - set(train_labels))
+print(set(train_labels) - set(labels_dict.keys()))
+
+```
+
+
+
+```{python}
+import anthropic
+
+import os
+import time
+
+client = anthropic.Anthropic()
+
+
+
+
+instructions = "Which intent does this bank customer's message express?"
+
+label_list = "\n".join(f"- {k}: {v}" for k, v in labels_dict.items())
+
+
+
+
+
+
+tool = {
+    "name": "classify",
+    "description": "Record the intent label for the message.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "enum": list(labels_dict.keys())},
+            "confidence": {
+                "type": "number",
+                "description": "Probability from 0 to 1 that the label is correct."
+            }
+        },
+        "required": ["label", "confidence"]
+    }
+}
+
+
+if os.path.exists("results/claude.jsonl"):
+
+    done_ids = set(pd.read_json("results/claude.jsonl", lines=True)["id"])
+else:
+    done_ids = set()
+
+with open("results/claude.jsonl", "a", encoding="utf-8") as file:
+
+    for row in test.itertuples():
+
+        if row.id in done_ids:
+            continue
+    
+
+        id = row.id
+        text = row.text
+        true_label = row.label
+
+
+        prompt = f"""{instructions}
+
+        Choose exactly one label from this list:
+        {label_list}
+
+        Message:
+        <message>
+        {text}
+        </message>
+
+        Also give your confidence: the probability from 0 to 1 that your chosen label is correct."""
+
+        
+
+        start_time = time.perf_counter()
+
+
+        message = client.messages.create(
+            model="claude-haiku-5-5",  
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "classify"}
+        )
+
+        end_time = time.perf_counter()
+        run_time = end_time - start_time
+
+
+        prediction = message.content[0].input["label"]
+        confidence = message.content[0].input["confidence"]
+        input_tokens = message.usage.input_tokens
+        output_tokens = message.usage.output_tokens
+        model = message.model
+        
+
+        json_dict = {
+                "id": id,
+                "label": true_label,
+                "pred": prediction,
+                "prob": confidence,
+                "latency": run_time,
+                "input_tokens": input_tokens,
+                "output_tokens":output_tokens,
+                "model": model
+            }
+
+        j_string = json.dumps(json_dict)
+        file.write(j_string + "\n")
+```
+
+
+
+```{python}
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+d = pd.read_json("results/claude.jsonl", lines=True)
+
+labels = d["label"]
+preds = d["pred"]
+
+print("Accuracy:", accuracy_score(labels, preds))
+```
+
+
+
+
+```{python}
+
+bins = np.linspace(0, 1, 11)
+
+
+d["correct"] = np.where(d["pred"] == d["label"], 1, 0)
+d["bin_probs"] = pd.cut(d["prob"], bins=bins, include_lowest=True)
+```
+
+
+
+
+```{python}
+g = d.groupby("bin_probs", observed=True).agg(
+    average_prob=("prob", "mean"),
+    average_correct=("correct", "mean"),
+    num_correct=("correct", "sum"),
+    n=("correct", "count")
+).reset_index()
+```
+
+
+
+```{python}
+import matplotlib.pyplot as plt
+
+x = g["average_prob"]
+y = g["average_correct"]
+
+fig, ax = plt.subplots(figsize=(8,8))
+
+ax.plot(x, y)
+ax.set_xlabel("Average Probability")
+ax.set_ylabel("Accuracy")
+ax.plot([0, 1], [0, 1], "--")
+
+```
+
+
+
+```{python}
+ece = sum(abs(y - x) * (g["n"] / len(d)))
+print(ece)
+```
+
+
+
+
+```{python}
+sorted_probs = d.sort_values("prob", ascending=False)
+
+sorted_probs["coverage"] = np.arange(1, len(sorted_probs)+1) / len(sorted_probs)
+sorted_probs["selective_accuracy"] = sorted_probs["correct"].cumsum() / np.arange(1, len(sorted_probs)+1)
+```
+
+
+
+```{python}
+x = sorted_probs["coverage"]
+y = sorted_probs["selective_accuracy"]
+
+fig, ax = plt.subplots(figsize=(8,8))
+
+ax.plot(x, y)
+ax.set_xlabel("Coverage")
+ax.set_ylabel("Selective Accuracy")
+ax.axhline(0.95)
+ax.axhline(d["correct"].mean())
+```
+
+
+```{python}
+print("50% Coverage:", sorted_probs.iloc[int(0.5*len(sorted_probs))-1]["selective_accuracy"])
+print("80% Coverage:", sorted_probs.iloc[int(0.8*len(sorted_probs))-1]["selective_accuracy"])
+```
+
+
+```{python}
+print("Median Latency:", d["latency"].median())
+print("95th Pct Latency:", d["latency"].quantile(.95))
+
+```
+
+
+
+```{python}
+
+input_cost = 0.10 / 1000000
+output_cost = 0.50 / 1000000
+total_cost = (input_cost * d["input_tokens"].sum()) + (output_cost * d["output_tokens"].sum()) 
+
+
+summary = {
+    "model": d["model"].iloc[0],
+    "n": len(d),
+    "accuracy": d["correct"].mean(),
+    "ece": ece,
+    "selective_acc_50": sorted_probs.iloc[int(0.5*len(sorted_probs))-1]["selective_accuracy"],
+    "selective_acc_80": sorted_probs.iloc[int(0.8*len(sorted_probs))-1]["selective_accuracy"],
+    "latency_median": d["latency"].median(),
+    "latency_p95": d["latency"].quantile(.95),
+    "avg_input_tokens": d["input_tokens"].mean(),
+    "avg_output_tokens": d["output_tokens"].mean(),
+    "total_cost": total_cost
+}
+
+with open("results/claude_summary.json", "w", encoding="utf-8") as file:
+    json.dump(summary, file, indent=2)
+```
+
+
+
+
+
+
+```{python}
+wrong = d[d["correct"] == 0]
+wrong.groupby(["label", "pred"])["label"].count().sort_values(ascending=False)
+```
+
+
+
+
+
+
+
+
+
+
+Adversarial
+
+```{python}
+import pandas as pd
+import numpy as np
+import json
+
+test_adv = pd.read_csv("data/adversarial.csv")
+
+with open("data/labels.json", "r", encoding="utf-8") as file:
+    labels_dict = json.load(file)
+
+```
+
+
+
+
+```{python}
+import anthropic
+
+import os
+import time
+
+client = anthropic.Anthropic()
+
+
+
+
+instructions = "Which intent does this bank customer's message express?"
+
+label_list = "\n".join(f"- {k}: {v}" for k, v in labels_dict.items())
+
+
+
+
+
+
+tool = {
+    "name": "classify",
+    "description": "Record the intent label for the message.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "enum": list(labels_dict.keys())},
+            "confidence": {
+                "type": "number",
+                "description": "Probability from 0 to 1 that the label is correct."
+            }
+        },
+        "required": ["label", "confidence"]
+    }
+}
+
+
+if os.path.exists("results/claude_adversarial.jsonl"):
+
+    done_ids = set(pd.read_json("results/claude_adversarial.jsonl", lines=True)["id"])
+else:
+    done_ids = set()
+
+with open("results/claude_adversarial.jsonl", "a", encoding="utf-8") as file:
+
+    for row in test_adv.itertuples():
+
+        if row.id in done_ids:
+            continue
+    
+
+        id = row.id
+        text = row.text
+        true_label = row.label
+        target = row.target
+
+
+        prompt = f"""{instructions}
+
+        Choose exactly one label from this list:
+        {label_list}
+
+        Message:
+        <message>
+        {text}
+        </message>
+
+        Also give your confidence: the probability from 0 to 1 that your chosen label is correct."""
+
+        
+
+        start_time = time.perf_counter()
+
+
+        message = client.messages.create(
+            model="claude-haiku-5-5",  
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "classify"}
+        )
+
+        end_time = time.perf_counter()
+        run_time = end_time - start_time
+
+
+        prediction = message.content[0].input["label"]
+        confidence = message.content[0].input["confidence"]
+        input_tokens = message.usage.input_tokens
+        output_tokens = message.usage.output_tokens
+        model = message.model
+        
+
+        json_dict = {
+                "id": id,
+                "label": true_label,
+                "target": target,
+                "pred": prediction,
+                "prob": confidence,
+                "latency": run_time,
+                "input_tokens": input_tokens,
+                "output_tokens":output_tokens,
+                "model": model
+            }
+
+        j_string = json.dumps(json_dict)
+        file.write(j_string + "\n")
+```
+
+
+
+```{python}
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+d = pd.read_json("results/claude_adversarial.jsonl", lines=True)
+
+labels = d["label"]
+preds = d["pred"]
+
+injection_accuracy = accuracy_score(labels, preds)
+
+print("Accuracy with Injection:", injection_accuracy)
+```
+
+
+```{python}
+attack_success = (d["target"] == preds).sum()
+```
+
+
+
+
+```{python}
+c = pd.read_json("results/claude.jsonl", lines=True)
+
+cd = c[c["id"].isin(set(d["id"]))]
+
+labels = cd["label"]
+preds = cd["pred"]
+
+clean_accuracy = accuracy_score(labels, preds)
+
+print("Accuracy without Injection:", clean_accuracy)
+```
+
+
+
+
+```{python}
+adv_results = {"injection_accuracy": injection_accuracy,
+                "clean_accuracy": clean_accuracy,
+                "attack_success": int(attack_success)}
+
+
+
+with open("results/claude_summary.json", "r") as file:
+    data = json.load(file)
+
+
+combined_dict = data | adv_results
+
+with open("results/claude_summary.json", "w") as file:
+    json.dump(combined_dict, file, indent=4)
+
+```

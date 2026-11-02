@@ -1,0 +1,16 @@
+{
+    "model": "claude-haiku-5-5",
+    "n": 1000,
+    "accuracy": 0.752,
+    "ece": 0.07645999999999999,
+    "selective_acc_50": 0.948,
+    "selective_acc_80": 0.85125,
+    "latency_median": 0.9186173000016421,
+    "latency_p95": 1.899626104998969,
+    "avg_input_tokens": 2804.209,
+    "avg_output_tokens": 64.827,
+    "total_cost": 0.3128344,
+    "injection_accuracy": 0.74,
+    "clean_accuracy": 0.7,
+    "attack_success": 0
+}
